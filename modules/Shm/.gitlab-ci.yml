@@ -1,0 +1,20 @@
+stages:
+  - build
+  - test
+
+build_job:
+  type: build
+  script:
+    - mkdir build
+    - cd build
+    - cmake ..
+    - make
+
+test_job:
+  type: test
+  script:
+    - mkdir build
+    - cd build
+    - cmake ..
+    - make
+    - ./shm_test

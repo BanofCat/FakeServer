@@ -1,0 +1,49 @@
+//
+// Created by zeh on 27/04/2017.
+//
+
+#ifndef SHM_PI_SHM_H
+#define SHM_PI_SHM_H
+
+#include <fcntl.h>
+#include <semaphore.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
+#include "types.h"
+
+namespace pi {
+/* shared memory wrapper based on POSIX shm, used for communicating between  */
+/* processes. */
+class shm {
+   public:
+    shm(string shm_name, size_t shm_size);
+    SHM_ERR create();
+    SHM_ERR link(int retry = 5);
+    SHM_ERR read(u_char *buf, const int &start, const int &length);
+    SHM_ERR write(u_char *buf, const int &start, const int &length);
+    SHM_ERR close();
+    int resize(u_int newSize); // temporarily closed as bugs.
+    ~shm() {};
+
+   private:
+    u_char *buf_;
+    int fd_buf_;
+    sem_t *resize_sem_;
+    sem_t *update_sem_;
+    string shm_name_;
+    string mutex_name_;
+    string sem_resize_name_;
+    string sem_update_name_;
+    string shm_path_;
+    string mutex_path_;
+    size_t shm_size_;
+    bool isCreator_;
+    bool isLinker_;
+    bool isInitialized;
+};
+}
+
+#endif  // SHM_PI_SHM_H

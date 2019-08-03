@@ -1,0 +1,55 @@
+Note: Be sure to install cython !!! terminal : "sudo apt-get install cython" or "sudo pip install cython"
+You can use python sharedMem by 2 ways:
+1. in the "Shm"(in git is "shm_module" ) directory, you should run 'python __init__.py', which will create "Shm.so" firstly;copy "Shm.so" file to your python project directory, then use "Shm.so" by "from Shm import PyShm"
+2. copy entire directory "Shm"(or "shm_module" ) to your python project as a package, Last level directory of "Shm"(or "shm_module" ): only import Shm module "from Shm import PyShm" (or "from shm_module import PyShm") in your python shell file.
+
+Example:
+"from Shm import PyShm" or "from shm_module import PyShm"import numpy as np
+
+ShmName='zhzShm'
+ShmSize=128
+
+shm=PyShm(ShmName)
+
+# print 'dir PyShm: ', dir(PyShm)
+if -1 == shm.create(ShmSize):
+	print 'Failed to create the shm : ', ShmName
+	exit(-1)
+
+
+# write read array data
+ndSize=(6,1)
+myOne=np.ones(ndSize, dtype=np.int64)
+myOne[0,0]=123456
+print 'write the ndarray: \n', myOne
+print 'shm.writeData: ', shm.writeData(myOne, 0)
+
+Da = shm.readData( 0, myOne.nbytes, np.int64)
+if Da == None:
+	print 'Failed to readData !'
+	exit(-1)
+else:
+	Da.resize(ndSize)
+	print 'call read data: ', Da.dtype, '  read data:\n', Da
+
+#write read char(np.uint8)
+print '\n------------------------------\n'
+ndChr=np.array([ord('U')], dtype=np.uint8)
+print 'write the ndChr: \n', ndChr
+print 'shm.writeData: ', shm.writeData(ndChr, 15)
+
+Da = shm.readData( 15, 1)
+if Da == None:
+	print 'Failed to readData !'
+	exit(-1)
+else:
+	print 'call read data: ', Da.dtype, '  read data:\n', Da, ': ', chr(Da[0])
+
+print '---------------- test the flushData --------'
+shm.flushData()
+Da = shm.readData( 0, myOne.nbytes, np.int64)
+if Da == None:
+	print 'Failed to readData !'
+	exit(-1)
+else:
+	print 'call read flush data: ', Da.dtype, '  read flush data:\n', Da, ': ', chr(Da[0])

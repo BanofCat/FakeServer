@@ -1,0 +1,346 @@
+// Wrapper of POSIX shared memory interface.
+
+#include "shm.h"
+
+namespace pi {
+
+shm::shm(string shm_name, size_t shm_size) {
+    shm_name_ = shm_name;
+    shm_size_ = shm_size;
+    mutex_name_ = shm_name_ + "_mutex";
+    sem_resize_name_ = shm_name_ + "_resize_sem";
+    sem_update_name_ = shm_name_ + "_update_sem";
+//    shm_path_ = "/dev/shm" + shm_name_;
+//    mutex_path_ = "/dev/shm" + mutex_name_;
+
+    shm_path_ = "/dev/shm/" + shm_name_;
+    mutex_path_ = "/dev/shm/" + mutex_name_;//change by zhz
+    buf_ = nullptr;
+    isCreator_ = false;
+    isLinker_ = false;
+    fd_buf_ = -1;
+    printf(
+        "shm_name: %s\n \
+            shm_size: %d\n \
+            shm_path: %s\n ",
+        shm_name_.c_str(), shm_size_, shm_path_.c_str());
+    fflush(stdout);
+    resize_sem_ = new sem_t();
+    update_sem_ = new sem_t();
+    isInitialized = false;
+}
+
+SHM_ERR shm::create() {
+    // no need to call create(int &) more than once.
+    if (isCreator_) {
+        char info[] = "Do not call create() again.\n";
+        ::write(STDOUT_FILENO, info, sizeof(info));
+        return FAILURE;
+    }
+
+    if (isLinker_) {
+        char info[] = "linker do not call create().\n";
+        ::write(STDOUT_FILENO, info, sizeof(info));
+        return FAILURE;
+    }
+
+    // check mapped file existence
+    if (access(shm_path_.c_str(), R_OK) == 0) {  // file exists.
+        if (shm_unlink(shm_name_.c_str()) != 0) {
+            perror("unlink:");
+            return FAILURE;
+        }
+        printf("Removed existed file.\n");
+        fflush(stdout);
+    }
+
+    // POSIX shm creation
+    fd_buf_ = shm_open(shm_name_.c_str(), O_RDWR | O_CREAT, S_IRWXU);
+    if (fd_buf_ < 0) {
+        perror("shm_open()");
+        return FAILURE;
+    }
+
+    if (ftruncate(fd_buf_, shm_size_) != 0) {
+        perror("ftruncate()");
+        return FAILURE;
+    }
+
+    buf_ = (u_char *)mmap(NULL, shm_size_, PROT_READ | PROT_WRITE, MAP_SHARED,
+                          fd_buf_, 0);
+
+    if (buf_ == MAP_FAILED) {
+        buf_ = nullptr;  // if mmap is unsuccessfully called, buf_ should point
+                         // to NULL.
+        perror("mmap()");
+        return FAILURE;
+    }
+
+    // check sem file existence
+    errno = sem_unlink(sem_resize_name_.c_str());
+    if(errno == EACCES) {
+        perror("sem_unlink on resize sem");
+        return FAILURE;
+    }
+
+    errno = sem_unlink(sem_update_name_.c_str());
+    if(errno == EACCES) {
+        perror("sem_unlink on update sem");
+        return FAILURE;
+    }
+
+    // POSIX semaphore creation
+    resize_sem_ =
+        sem_open(sem_resize_name_.c_str(), O_CREAT | O_RDWR, S_IRWXU, 1);
+    update_sem_ =
+        sem_open(sem_update_name_.c_str(), O_CREAT | O_RDWR, S_IRWXU, 0);
+    if (SEM_FAILED == resize_sem_ || SEM_FAILED == update_sem_) {
+        perror("sem_open()");
+        return FAILURE;
+    }
+
+    isCreator_ = true;
+    isInitialized = true;
+
+    return SUCCESS;
+}  // create()
+
+SHM_ERR shm::link(int retry) {
+    // can only be either creator or linker.
+    if (isCreator_) {
+        char info[] = "Creator do not call link().\n";
+        ::write(STDOUT_FILENO, info, sizeof(info));
+        return FAILURE;
+    }
+
+//    if (isLinker_) {
+//        char info[] = "Already linked.\n";
+//        ::write(STDOUT_FILENO, info, sizeof(info));
+//        return FAILURE;
+//    }
+
+    buf_ = nullptr;
+
+    int count = 0;
+    while (count < retry) {
+        if (access(shm_path_.c_str(), R_OK) == 0) {
+            break;
+        } else {
+            printf("Retry linking... %d\n", count);
+            fflush(stdout);
+            ++count;
+        }
+    }
+
+    if (count == retry) {
+        char info[] = "Linking timeout, abort.\n";
+        ::write(STDOUT_FILENO, info, sizeof(info));
+        return TIMEOUT;
+    }
+
+    // fix actual shm size to linked shm size if given size doesn't match.
+    struct stat shm_stat;
+    stat(shm_path_.c_str(), &shm_stat);
+    if (shm_stat.st_size != shm_size_) {
+        printf(
+            "Warning: Given shm size differs from linked shm size, change from given size %d to linked shm size %d.\n",
+            shm_size_, shm_stat.st_size);
+        fflush(stdout);
+        shm_size_ = shm_stat.st_size;
+    }
+
+    // POSIX shm link
+    fd_buf_ = shm_open(shm_name_.c_str(), O_RDONLY, S_IRUSR);
+    if (fd_buf_ < 0) {
+        perror("shm_open()");
+        return FAILURE;
+    }
+
+    buf_ = (u_char *)mmap(NULL, shm_size_, PROT_READ, MAP_SHARED, fd_buf_, 0);
+    if (buf_ == MAP_FAILED) {
+        buf_ = nullptr;
+        perror("mmap()");
+        return FAILURE;
+    }
+
+    // POSIX sem link
+    resize_sem_ = sem_open(sem_resize_name_.c_str(), O_RDWR);
+    update_sem_ = sem_open(sem_update_name_.c_str(), O_RDWR);
+    if (SEM_FAILED == resize_sem_ || SEM_FAILED == update_sem_) {
+        perror("sem_open()");
+        return FAILURE;
+    }
+
+    isLinker_ = true;
+    isInitialized = true;
+    return SUCCESS;
+}
+
+SHM_ERR shm::read(u_char *buf, const int &start, const int &length) {
+  	int true_len = length;
+    // TODO : need to check shm_path_ exist to avoid creator exit first and
+    // removed mapping file.
+    if (!isInitialized) {
+        char err[] = "Create a shared memory or link to one first.\n";
+        ::write(STDOUT_FILENO, err, sizeof(err));
+        return UNINIT;
+    }
+
+    // only linker before read should update shm size
+    if (isLinker_) {
+        int resize_value = 0;
+        sem_getvalue(resize_sem_, &resize_value);
+        if (0 == resize_value) {
+            struct stat shm_stat;
+            if (stat(shm_path_.c_str(), &shm_stat) < 0) {
+                perror("update size before read");
+                return FAILURE;
+            }
+            shm_size_ = shm_stat.st_size;
+            printf("Linker updated shm size to: %d\n", shm_size_);
+            fflush(stdout);
+            sem_post(resize_sem_);  // set resize_sem_ to 1;
+
+		  fd_buf_ = 0;
+		  fd_buf_ = shm_open(shm_name_.c_str(), O_RDONLY, S_IRUSR);
+		  if(fd_buf_ < 0) {
+			perror("shm_open");
+		  }
+		  	buf_ = (u_char*)mmap(NULL, shm_size_, PROT_READ, MAP_SHARED, fd_buf_, 0);
+		  if(buf_ == MAP_FAILED) {
+			buf_ = nullptr;
+			perror("mmap");
+			return FAILURE;
+		  }
+        }
+    }
+
+  	if (buf == nullptr) {
+	  return FAILURE;
+    }
+  	if(start + length > shm_size_) {
+	 	printf("Access out of range, change length from %d to %d.\n", length, (shm_size_ - start));
+	  	fflush(stdout);
+	  	true_len = shm_size_ - start;
+	}
+
+  	if(isLinker_) { // as a linker need to sync data with creator, creator read itself data has no this limit.
+	  struct timespec timeout;
+	  timeout.tv_nsec = 500000;  // 0.5 ms
+
+	  sem_timedwait(update_sem_, &timeout);
+	}
+    memcpy(buf, buf_ + start, true_len);
+    return SUCCESS;
+}
+
+SHM_ERR shm::write(u_char *buf, const int &start, const int &length) {
+    if (!isCreator_) {  // non-creator can not write
+        char info[] = "Non-creator has no write permission.\n";
+        ::write(STDOUT_FILENO, info, sizeof(info));
+        return PERMISSION_DENIED;
+    }
+
+    if ((buf_ == nullptr) || isLinker_) {
+        char warn[] = "Please create or link first.\n";
+        ::write(STDOUT_FILENO, warn, sizeof(warn));
+        return FAILURE;
+    }
+
+    if ((buf == nullptr) || (start + length > shm_size_)) {
+        char warn[] = "Invalid parameters for write().\n";
+        ::write(STDOUT_FILENO, warn, sizeof(warn));
+        return INVALID_PARAM;
+    }
+
+    memcpy(buf_ + start, buf, length);
+
+    if (sem_post(update_sem_) < 0) {
+        perror("sem_post in write");
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+
+int shm::resize(u_int newSize) {
+    if (!isInitialized) {
+        char err[] = "Create a shared memory or link to one first.\n";
+        ::write(STDOUT_FILENO, err, sizeof(err));
+        return UNINIT;
+    }
+
+    if (!isCreator_) {
+        char err[] = "Only creator can resize.\n";
+        ::write(STDOUT_FILENO, err, sizeof(err));
+        return FAILURE;
+    }
+
+    if (ftruncate(fd_buf_, newSize) != 0) {
+        perror("ftruncate()");
+        return FAILURE;
+    }
+
+    // if the last resize() didn't be updated by linker, then wait for 0.5ms,
+    // but I think this wouldn't happend in real world situation. I would
+    // comment out this intentionally.
+
+    /*
+    int sem_value = 0;
+    struct timespec timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_nsec = 500000;
+    sem_getvalue(resize_sem_, &sem_value);
+    if(0 == sem_value) {
+        sem_timedwait(resize_sem_, &timeout); // 0.5 ms timeout
+    }
+    */
+
+    shm_size_ = newSize;
+
+    buf_ = (u_char *)mmap(NULL, shm_size_, PROT_READ | PROT_WRITE, MAP_SHARED,
+                          fd_buf_, 0);
+    if (buf_ == MAP_FAILED) {
+        perror("resize()");
+        return FAILURE;
+    }
+
+    // As resize_sem_ value initially is 1, using sem_wait() decrement it to 0,
+    // and linker side will sem_getvalue() at beginning of read(), if
+    // resize_sem_ value is 0, that means size is updated. After linker update
+    // the size, sem_post() resize_sem_ increment to 1, which means resize_sem_
+    // value of 1 means there is NO size update, 1 represent for THERE IS size
+    // update.
+    // Here using sem_trywait() instead of sem_wait because of sem_trywait() can
+    // return immediately.
+    if (-1 == sem_trywait(resize_sem_)) {
+        perror("sem_trywait in resize");
+        return FAILURE;
+    }
+
+    return SUCCESS;
+}
+
+SHM_ERR shm::close() {
+    if (::close(fd_buf_) < 0) {
+        perror("WARNING: close file descriptor failed.");
+    }
+
+  	if(munmap(buf_, shm_size_) == -1) {
+	  perror("WARNING: munmap shm failed.");
+	}
+
+  	if(shm_unlink(shm_name_.c_str()) == -1) {
+	  perror("WARNING: unlink shm failed.");
+	}
+
+  	if(sem_unlink(sem_resize_name_.c_str()) == -1) {
+	  perror("WARNING: unlink resize sem failed.");
+	}
+
+  	if(sem_unlink(sem_update_name_.c_str()) == -1) {
+	  perror("WARNING: unlink update sem failed.");
+	}
+
+    return SUCCESS;
+}
+}  // namespace pi

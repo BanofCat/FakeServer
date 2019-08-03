@@ -1,0 +1,25 @@
+PythonCflags=-I/usr/include/python2.7 -I/usr/include/python2.7 -DNDEBUG -g -fwrapv -O2 
+
+
+Target=Shm
+
+${Target}.so: ${Target}.o shm_module.o timer.o
+	g++ -shared -fPIC  ${Target}.o shm_module.o timer.o -o Shm.so `python-config --libs` -lpthread -lrt
+	rm -f *.o ${Target}.cpp
+
+${Target}.o: ${Target}.cpp	
+	g++ -fPIC -c ${Target}.cpp  -I./include/ -o ${Target}.o ${PythonCflags}
+
+${Target}.cpp: 
+	cython ${Target}.pyx --cplus
+
+shm_module.o: 
+	g++ -fPIC -c ./src/shm_module.cpp -I./include/
+
+timer.o: 
+	g++ -fPIC -c ./src/timer.cpp -I./include/
+
+clean: 
+	rm -f *.o *.so	${Target}.cpp
+
+
